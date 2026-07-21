@@ -25,6 +25,8 @@
     --amber-soft:#F3E7CF;
     --fill:#CFE0D3;
     --radius:14px;
+    --accent:var(--moss);
+    --accent-soft:#E4F0E6;
     --display:"Iowan Old Style","Palatino",Georgia,serif;
     --body:-apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",sans-serif;
   }
@@ -94,6 +96,23 @@
   button.reset{font-family:var(--body); font-size:12.5px; color:var(--muted); background:transparent; border:1px solid var(--line); border-radius:9px; padding:8px 14px; cursor:pointer; -webkit-tap-highlight-color:transparent}
   button.reset:active{border-color:#C2CDBE; color:var(--ink)}
 
+  /* storage status panel */
+  .diag{margin-top:26px; padding:15px 16px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius)}
+  .diag-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:13px}
+  .diag-title{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:700}
+  .diag-refresh{font:inherit; font-size:12px; color:var(--accent); background:transparent; border:none; padding:4px 6px; cursor:pointer; font-weight:600; -webkit-tap-highlight-color:transparent}
+  .diag-row{display:grid; grid-template-columns:92px 1fr auto; gap:10px; align-items:center; margin-bottom:12px}
+  .diag-label{font-size:12.5px; color:var(--muted)}
+  .diag-bar{height:8px; background:var(--line); border-radius:99px; overflow:hidden}
+  .diag-fill{height:100%; width:0%; background:var(--accent); border-radius:99px; transition:width .4s ease}
+  .diag-val{font-size:12px; font-variant-numeric:tabular-nums; color:var(--ink); white-space:nowrap}
+  .diag-row2{display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap}
+  .diag-pill{font-size:12px; font-weight:700; padding:4px 11px; border-radius:999px; background:var(--line); color:var(--muted)}
+  .diag-pill.ok{background:var(--accent-soft); color:var(--accent)}
+  .diag-pill.warn{background:#F6E9CF; color:#8A6A1E}
+  .diag-btn{font:inherit; font-size:12px; font-weight:600; color:#fff; background:var(--accent); border:none; border-radius:8px; padding:6px 12px; cursor:pointer; -webkit-tap-highlight-color:transparent}
+  .diag-note{font-size:11.5px; color:var(--muted); margin:8px 0 0; line-height:1.45}
+
   @media (prefers-reduced-motion: no-preference){
     .box,.dot-circle,.stage,li.task{transition:background .15s ease,border-color .15s ease,opacity .15s ease}
     .rider,.fillpath{transition:all .5s cubic-bezier(.4,0,.2,1)}
@@ -124,6 +143,27 @@
     <p class="note">Not medical advice — I haven't examined you. Sharp pain, a lump or gap, heavy bruising, or no pain-free double-leg raise by end of week 1 means see a PT or doctor.</p>
     <button class="reset" id="reset">Reset progress</button>
   </footer>
+
+  <section class="diag" id="diag" aria-label="Storage status">
+    <div class="diag-head">
+      <span class="diag-title">Storage status</span>
+      <button class="diag-refresh" id="diagRefresh">Refresh</button>
+    </div>
+    <div class="diag-row">
+      <span class="diag-label">Space used</span>
+      <span class="diag-bar"><span class="diag-fill" id="diagFill"></span></span>
+      <span class="diag-val" id="diagUsage">—</span>
+    </div>
+    <div class="diag-row2">
+      <span class="diag-pill" id="diagPersist">Checking…</span>
+      <button class="diag-btn" id="diagProtect" hidden>Request protection</button>
+    </div>
+    <div class="diag-row2">
+      <span class="diag-label">Saved progress</span>
+      <span class="diag-val" id="diagCount">—</span>
+    </div>
+    <p class="diag-note" id="diagNote"></p>
+  </section>
 </div>
 
 <script>
@@ -189,11 +229,9 @@ function load(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
     if(raw){ const p = JSON.parse(raw); state.checks = p.checks||{}; state.dots = p.dots||{}; }
-  }catch(e){ /* storage unavailable — runs in-session only */ }
+  }catch(e){}
 }
-function save(){
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
-}
+function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){} }
 
 const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none"><path d="M5 12.5l4.2 4.2L19 7" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -268,6 +306,7 @@ function render(){
   });
   wire();
   updateRidge();
+  if(window.refreshDiag) window.refreshDiag();
 }
 
 function wire(){
@@ -325,6 +364,70 @@ document.getElementById('reset').onclick = ()=>{
   if(!confirm('Clear all checkmarks and start over?')) return;
   state = {checks:{}, dots:{}}; save(); render();
 };
+
+/* app-specific data canary for the status panel */
+window.diagCount = function(){ let t=0,d=0; PHASES.forEach(p=>{ const u=phaseUnits(p); t+=u.total; d+=u.done; }); return {done:d,total:t}; };
+
+/* ---- storage status panel (drop-in; uses --accent / --accent-soft) ---- */
+(function(){
+  const $ = id => document.getElementById(id);
+  const fmtUse = b => b < 1048576 ? Math.round(b/1024)+' KB' : (b/1048576).toFixed(b<10485760?1:0)+' MB';
+  const fmtCap = b => b < 1073741824 ? Math.round(b/1048576)+' MB' : (b/1073741824).toFixed(1)+' GB';
+
+  async function refresh(){
+    // usage / quota
+    try{
+      if(navigator.storage && navigator.storage.estimate){
+        const est = await navigator.storage.estimate();
+        const usage = est.usage||0, quota = est.quota||0;
+        const pct = quota ? (usage/quota*100) : 0;
+        $('diagFill').style.width = (pct>0 ? Math.max(pct,1.5) : 0) + '%';
+        const pctTxt = (pct>0 && pct<0.1) ? '<0.1%' : pct.toFixed(pct<10?1:0)+'%';
+        $('diagUsage').textContent = fmtUse(usage)+' / '+fmtCap(quota)+' · '+pctTxt;
+      } else { $('diagUsage').textContent = 'Not reported'; }
+    }catch(e){ $('diagUsage').textContent = 'Unavailable'; }
+
+    // persistence state
+    try{
+      if(navigator.storage && navigator.storage.persisted){
+        const persisted = await navigator.storage.persisted();
+        const pill = $('diagPersist');
+        if(persisted){
+          pill.textContent = 'Protected'; pill.className = 'diag-pill ok';
+          $('diagProtect').hidden = true;
+          $('diagNote').textContent = 'Exempt from automatic storage cleanup. An external backup is still your only protection against deleting the app, clearing website data, or OS events.';
+        } else {
+          pill.textContent = 'Best-effort · evictable'; pill.className = 'diag-pill warn';
+          $('diagProtect').hidden = !(navigator.storage && navigator.storage.persist);
+          $('diagNote').textContent = 'Not protected — the browser may clear this data under storage pressure. Tap “Request protection” to ask it to keep this app exempt.';
+        }
+      } else {
+        $('diagPersist').textContent = 'Status unavailable'; $('diagPersist').className = 'diag-pill';
+        $('diagProtect').hidden = true;
+        $('diagNote').textContent = 'This browser doesn’t report a persistence status.';
+      }
+    }catch(e){}
+
+    // saved-progress canary
+    try{
+      const c = (typeof window.diagCount === 'function') ? window.diagCount() : null;
+      $('diagCount').textContent = c ? (c.done+' of '+c.total+' complete') : '—';
+    }catch(e){ $('diagCount').textContent = '—'; }
+  }
+  window.refreshDiag = refresh;
+
+  $('diagRefresh').onclick = refresh;
+  $('diagProtect').onclick = async ()=>{
+    try{ if(navigator.storage && navigator.storage.persist){ await navigator.storage.persist(); } }catch(e){}
+    refresh();
+  };
+
+  // auto-request persistence once on launch, then show status
+  (async ()=>{
+    try{ if(navigator.storage && navigator.storage.persist){ await navigator.storage.persist(); } }catch(e){}
+    refresh();
+  })();
+})();
 
 load(); render();
 </script>
