@@ -19,8 +19,9 @@ next phase unlocks only when your tolerance says it should.
 
 ## Live URL
 
-<!-- TODO: paste the GitHub Pages URL here once Pages has finished building -->
-_Pages URL goes here._
+**https://dandunbar.github.io/calf-rehab/**
+
+Open it on your iPhone, then Share → Add to Home Screen.
 
 ## Running it locally
 
